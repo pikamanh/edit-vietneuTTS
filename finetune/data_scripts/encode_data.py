@@ -2,9 +2,8 @@ import os
 import torch
 import librosa
 import json
-import soundfile as sf
 from tqdm import tqdm
-from xcodec2.modeling_xcodec2 import XCodec2Model
+from neucodec import NeuCodec
 
 import random
 
@@ -21,9 +20,9 @@ def encode_dataset(dataset_dir="finetune/dataset", max_samples=2000):
         print("🦜 Không tìm thấy file metadata nào!")
         return
 
-    print("🦜 Đang tải XCodec2 model...")
+    print("🦜 Đang tải NeuCodec model...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    codec = XCodec2Model.from_pretrained("HKUSTAudio/xcodec2").to(device)
+    codec = NeuCodec.from_pretrained("neuphonic/neucodec").to(device)
     codec.eval()
 
     print(f"🦜 Bắt đầu encode metadata: {metadata_path}")
@@ -57,10 +56,10 @@ def encode_dataset(dataset_dir="finetune/dataset", max_samples=2000):
         try:
             wav, sr = librosa.load(audio_path, sr=16000, mono=True)
 
-            wav_tensor = torch.from_numpy(wav).float().unsqueeze(0)
+            wav_tensor = torch.from_numpy(wav).float().unsqueeze(0).unsqueeze(0)
             
             with torch.no_grad():
-                codes = codec.encode_code(input_waveform=wav_tensor)
+                codes = codec.encode_code(wav_tensor)
                 
                 codes = codes.squeeze(0).squeeze(0).cpu().numpy().flatten().tolist()
                 codes = [int(x) for x in codes]

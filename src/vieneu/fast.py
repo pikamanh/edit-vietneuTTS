@@ -9,7 +9,7 @@ from .base import BaseVieneuTTS
 from .utils import _compile_codec_with_triton, extract_speech_ids, _linear_overlap_add
 from vieneu_utils.phonemize_text import phonemize_with_dict, phonemize_batch
 from vieneu_utils.core_utils import split_text_into_chunks, join_audio_chunks
-from xcodec2.modeling_xcodec2 import XCodec2Model
+from neucodec import NeuCodec, DistillNeuCodec
 
 logger = logging.getLogger("Vieneu.Fast")
 
@@ -22,7 +22,7 @@ class FastVieNeuTTS(BaseVieneuTTS):
         self,
         backbone_repo: str = "pnnbao-ump/VieNeu-TTS",
         backbone_device: str = "cuda",
-        codec_repo: str = "HKUSTAudio/xcodec2",
+        codec_repo: str = "neuphonic/distill-neucodec",
         codec_device: str = "cuda",
         memory_util: float = 0.3,
         tp: int = 1,
@@ -87,13 +87,26 @@ class FastVieNeuTTS(BaseVieneuTTS):
 
     def _load_codec(self, codec_repo, codec_device, enable_triton):
         logger.info(f"Loading codec from: {codec_repo} on {codec_device}")
-        if codec_repo == "HKUSTAudio/xcodec2":
-            self.codec = XCodec2Model.from_pretrained(codec_repo)
-            self.codec.eval().to(codec_device)
-        else:
-            raise ValueError(f"Unsupported codec repository: {codec_repo}. Use 'HKUSTAudio/xcodec2'")
+        match codec_repo:
+            case "neuphonic/neucodec":
+                self.codec = NeuCodec.from_pretrained(codec_repo)
+                self.codec.eval().to(codec_device)
+            case "neuphonic/distill-neucodec":
+                self.codec = DistillNeuCodec.from_pretrained(codec_repo)
+                self.codec.eval().to(codec_device)
+            case "neuphonic/neucodec-onnx-decoder-int8":
+                if codec_device != "cpu":
+                    raise ValueError("ONNX decoder only runs on CPU")
+                try:
+                    from neucodec import NeuCodecOnnxDecoder
+                except ImportError as e:
+                    raise ImportError("Failed to import ONNX decoder.") from e
+                self.codec = NeuCodecOnnxDecoder.from_pretrained(codec_repo)
+                self._is_onnx_codec = True
+            case _:
+                raise ValueError(f"Unsupported codec repository: {codec_repo}")
 
-        if enable_triton and codec_device != "cpu":
+        if enable_triton and not self._is_onnx_codec and codec_device != "cpu":
             self._triton_enabled = _compile_codec_with_triton(self.codec)
 
     def _warmup_model(self):

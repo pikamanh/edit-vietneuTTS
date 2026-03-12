@@ -29,8 +29,16 @@ backbone_configs:
     description: Phiên bản 0.3B nén Q8, chất lượng cao và tốc độ nhanh trên CPU
 
 codec_configs:
-  "XCodec2":
-    repo: HKUSTAudio/xcodec2
-    description: Advanced audio codec for high-quality speech synthesis
+  "NeuCodec (Standard)":
+    repo: neuphonic/neucodec
+    description: Codec chuẩn, tốc độ trung bình
     use_preencoded: false
+  "NeuCodec (Distill)":
+    repo: neuphonic/distill-neucodec
+    description: Codec tối ưu, tốc độ cao
+    use_preencoded: false
+  "NeuCodec ONNX (Fast CPU)":
+    repo: neuphonic/neucodec-onnx-decoder-int8
+    description: Tối ưu cho CPU, cần pre-encoded codes
+    use_preencoded: true
 

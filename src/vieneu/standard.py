@@ -10,7 +10,7 @@ from .base import BaseVieneuTTS
 from .utils import extract_speech_ids, _linear_overlap_add
 from vieneu_utils.phonemize_text import phonemize_with_dict, phonemize_batch
 from vieneu_utils.core_utils import split_text_into_chunks, join_audio_chunks
-from xcodec2.modeling_xcodec2 import XCodec2Model
+from neucodec import NeuCodec, DistillNeuCodec
 
 logger = logging.getLogger("Vieneu.Standard")
 
@@ -24,7 +24,8 @@ class VieNeuTTS(BaseVieneuTTS):
         self,
         backbone_repo: str = "pnnbao-ump/VieNeu-TTS-0.3B-q4-gguf",
         backbone_device: str = "cpu",
-        codec_repo: str = "HKUSTAudio/xcodec2",
+        codec_custom=None,
+        codec_repo: str = "neuphonic/distill-neucodec",
         codec_device: str = "cpu",
         hf_token: Optional[str] = None,
     ):
@@ -42,10 +43,11 @@ class VieNeuTTS(BaseVieneuTTS):
         self.tokenizer = None
         self.backbone = None
         self.codec = None
+        self.codec_custom = codec_custom
 
         if backbone_repo:
             self._load_backbone(backbone_repo, backbone_device, hf_token)
-        self._load_codec(codec_repo, codec_device)
+        self._load_codec(codec_repo, codec_device, codec_custom)
         self._load_voices(backbone_repo, hf_token)
         self._warmup_model()
 
@@ -127,18 +129,38 @@ class VieNeuTTS(BaseVieneuTTS):
                 except Exception as e:
                     logger.warning(f"Failed to compile backbone: {e}")
 
-    def _load_codec(self, codec_repo: str, codec_device: str) -> None:
+    def _load_codec(self, codec_repo: str, codec_device: str, codec_custom=None) -> None:
+        if codec_custom:
+            self.codec = codec_custom
+            self.codec.eval().cuda()
+            return
+
         if codec_device == "mps" and not torch.backends.mps.is_available():
             logger.warning("Warning: MPS not available for codec, falling back to CPU")
             codec_device = "cpu"
 
         logger.info(f"Loading codec from: {codec_repo} on {codec_device} ...")
 
-        if codec_repo == "HKUSTAudio/xcodec2":
-            self.codec = XCodec2Model.from_pretrained(codec_repo)
-            self.codec.eval().to(codec_device)
+        if codec_repo == "neuphonic/neucodec":
+            self.codec = NeuCodec.from_pretrained(codec_repo)
+        elif codec_repo == "neuphonic/distill-neucodec":
+            self.codec = DistillNeuCodec.from_pretrained(codec_repo)
+        elif codec_repo == "neuphonic/neucodec-onnx-decoder-int8":
+            if codec_device != "cpu":
+                raise ValueError("Onnx decoder only currently runs on CPU.")
+            try:
+                from neucodec import NeuCodecOnnxDecoder
+            except ImportError as e:
+                raise ImportError(
+                    "Failed to import the onnx decoder. Ensure onnxruntime and neucodec >= 0.0.4 are installed."
+                ) from e
+            self.codec = NeuCodecOnnxDecoder.from_pretrained(codec_repo)
+            self._is_onnx_codec = True
         else:
-            raise ValueError(f"Unsupported codec repository: {codec_repo}. Use 'HKUSTAudio/xcodec2'")
+            raise ValueError(f"Unsupported codec repository: {codec_repo}")
+
+        if not self._is_onnx_codec:
+            self.codec.eval().to(codec_device)
 
     def load_lora_adapter(self, lora_repo_id: str, hf_token: Optional[str] = None) -> bool:
         if self._is_quantized_model:
@@ -205,8 +227,10 @@ class VieNeuTTS(BaseVieneuTTS):
             else:
                 prompt_ids = self._apply_chat_template(ref_codes, ref_phonemes, phonemes)
                 output_str = self._infer_torch(prompt_ids, temperature, top_k)
-            wav = self._decode(output_str)
-            return self._apply_watermark(wav)
+
+            return output_str, len(chunks)
+            # wav = self._decode(output_str)
+            # return self._apply_watermark(wav)
 
         all_wavs = self.infer_batch(
             chunks,
@@ -217,11 +241,13 @@ class VieNeuTTS(BaseVieneuTTS):
             skip_normalize=True,
             apply_watermark=False
         )
-        final_wav = join_audio_chunks(all_wavs, self.sample_rate, silence_p, crossfade_p)
-        return self._apply_watermark(final_wav)
+        return all_wavs, len(chunks)
+        # final_wav = join_audio_chunks(all_wavs, self.sample_rate, silence_p, crossfade_p)
+        # return self._apply_watermark(final_wav)
 
     def infer_batch(self, texts: List[str], ref_audio: Optional[Union[str, Path]] = None, ref_codes: Optional[Union[np.ndarray, torch.Tensor]] = None, ref_text: Optional[str] = None, voice: Optional[Dict[str, Any]] = None, temperature: float = 1.0, top_k: int = 50, skip_normalize: bool = False, apply_watermark: bool = True) -> List[np.ndarray]:
         ref_codes, ref_text = self._resolve_ref_voice(voice, ref_audio, ref_codes, ref_text)
+        all_codes = []
 
         if not skip_normalize:
             texts = [self.normalizer.normalize(t) for t in texts]
@@ -270,12 +296,13 @@ class VieNeuTTS(BaseVieneuTTS):
             for i in range(len(texts)):
                 generated_ids = output_tokens[i, input_length:]
                 output_str = self.tokenizer.decode(generated_ids, add_special_tokens=False)
-                wav = self._decode(output_str)
+                # wav = self._decode(output_str)
+                all_codes.append(output_str)
                 if apply_watermark:
                     wav = self._apply_watermark(wav)
                 all_wavs.append(wav)
 
-        return all_wavs
+        return all_codes
 
     def infer_stream(self, text: str, ref_audio: Optional[Union[str, Path]] = None, ref_codes: Optional[Union[np.ndarray, torch.Tensor]] = None, ref_text: Optional[str] = None, max_chars: int = 256, voice: Optional[Dict[str, Any]] = None, temperature: float = 1.0, top_k: int = 50, skip_normalize: bool = False) -> Generator[np.ndarray, None, None]:
 

@@ -194,17 +194,25 @@ class BaseVieneuTTS(ABC):
         Returns:
             torch.Tensor: Encoded codes.
         """
+        if self.codec_custom:
+            import soundfile as sf
+            wav, _ = sf.read(ref_audio_path)
+            wav_tensor = torch.from_numpy(wav).float().unsqueeze(0)
+            with torch.no_grad():
+                ref_codes = self.codec.encode_code(input_waveform=wav_tensor)
+
+            return ref_codes
+
         import librosa
         wav, _ = librosa.load(ref_audio_path, sr=16000, mono=True)
-        wav_tensor = torch.from_numpy(wav).float().unsqueeze(0)  # [1, T]
+        wav_tensor = torch.from_numpy(wav).float().unsqueeze(0).unsqueeze(0)  # [1, 1, T]
 
         # Ensure device and dtype compatibility
         if hasattr(self.codec, "device"):
             wav_tensor = wav_tensor.to(self.codec.device)
 
         with torch.no_grad():
-            # xcodec2 expects input_waveform parameter
-            ref_codes = self.codec.encode_code(input_waveform=wav_tensor).squeeze(0).squeeze(0)
+            ref_codes = self.codec.encode_code(audio_or_path=wav_tensor).squeeze(0).squeeze(0)
         return ref_codes
 
     def _decode(self, codes_str: str) -> np.ndarray:
@@ -222,19 +230,30 @@ class BaseVieneuTTS(ABC):
 
         if len(speech_ids) == 0:
             raise ValueError("No valid speech tokens found in the output.")
-
-        # Torch decode
-        with torch.no_grad():
+        
+        if self.codec_custom:
             codes = torch.tensor(speech_ids, dtype=torch.long)[None, None, :]
-            if hasattr(self.codec, "device"):
-                codes = codes.to(self.codec.device)
+            recon_wav = self.codec.decode_code(codes).cpu()
 
-            # xcodec2 expects vq_code parameter
-            recon = self.codec.decode_code(vq_code=codes)
-            if hasattr(recon, "cpu"):
-                recon = recon.cpu()
-            if hasattr(recon, "numpy"):
-                recon = recon.numpy()
+            return recon_wav[0, 0, :].numpy()
+
+        # Onnx decode
+        if getattr(self, "_is_onnx_codec", False):
+            codes = np.array(speech_ids, dtype=np.int32)[np.newaxis, np.newaxis, :]
+            recon = self.codec.decode_code(codes)
+        # Torch decode
+        else:
+            with torch.no_grad():
+                codes = torch.tensor(speech_ids, dtype=torch.long)[None, None, :]
+                if hasattr(self.codec, "device"):
+                    codes = codes.to(self.codec.device)
+
+                recon = self.codec.decode_code(codes)
+                if hasattr(recon, "cpu"):
+                    recon = recon.cpu()
+                if hasattr(recon, "numpy"):
+                    recon = recon.numpy()
+
 
         return recon[0, 0, :]
 

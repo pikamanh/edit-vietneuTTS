@@ -1027,7 +1027,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                     value="VieNeu-TTS (GPU)", 
                     label="🦜 Backbone"
                 )
-                codec_select = gr.Dropdown(list(CODEC_CONFIGS.keys()), value="XCodec2", label="🎵 Codec")
+                codec_select = gr.Dropdown(list(CODEC_CONFIGS.keys()), value="NeuCodec (Distill)", label="🎵 Codec")
                 device_choice = gr.Radio(get_available_devices(), value="Auto", label="🖥️ Device")
             
             with gr.Row(visible=False) as custom_model_group:

@@ -6,7 +6,7 @@ from typing import Optional, Union, List
 from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import logging
-from xcodec2.modeling_xcodec2 import XCodec2Model
+from neucodec import NeuCodec, DistillNeuCodec
 from .standard import VieNeuTTS
 from vieneu_utils.phonemize_text import phonemize_batch
 
@@ -22,7 +22,7 @@ class XPUVieNeuTTS(VieNeuTTS):
         self,
         backbone_repo="pnnbao-ump/VieNeu-TTS-0.3B-q4-gguf",
         backbone_device="xpu", # Forced default
-        codec_repo="HKUSTAudio/xcodec2",
+        codec_repo="neuphonic/distill-neucodec",
         codec_device="xpu",    # Forced default
         hf_token=None,
     ):
@@ -71,11 +71,17 @@ class XPUVieNeuTTS(VieNeuTTS):
         if not hasattr(torch, 'xpu') or not torch.xpu.is_available():
             raise RuntimeError("XPU device requested but torch.xpu.is_available() returned False")
         
-        if codec_repo == "HKUSTAudio/xcodec2":
-            self.codec = XCodec2Model.from_pretrained(codec_repo)
-            self.codec.eval().cuda()
-        else:
-            raise ValueError(f"Unsupported codec repository: {codec_repo}. Use 'HKUSTAudio/xcodec2'")
+        match codec_repo:
+            case "neuphonic/neucodec":
+                self.codec = NeuCodec.from_pretrained(codec_repo)
+                self.codec.eval().to(device="xpu", dtype=torch.float32)
+            case "neuphonic/distill-neucodec":
+                self.codec = DistillNeuCodec.from_pretrained(codec_repo)
+                self.codec.eval().to(device="xpu", dtype=torch.float32)
+            case "neuphonic/neucodec-onnx-decoder-int8":
+                raise ValueError("ONNX decoder does not support XPU device. Use CPU codec.")
+            case _:
+                raise ValueError(f"Unsupported codec repository: {codec_repo}")
         
         logger.info(f"   ✅ Codec loaded on XPU device")
 
